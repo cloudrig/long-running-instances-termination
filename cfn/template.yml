@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  LongRunningTimeThreshouldHour:
+    Type: Number
+    Description: "The threshould when the tool should consider that an instances is running for too much time"
+    MinValue: 1
+    Default: 3
+
+  RefreshPeriodSchedule:
+    Type: String
+    Description: "The schedule the tool will be run"
+    Default: "rate(15 minutes)"
+
+Resources:
+  TerminateLongRunningInstancesLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.7
+      Environment:
+        Variables:
+          LONG_RUNNING_TIME_THREASHOLD_HOUR: !Ref LongRunningTimeThreshouldHour
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "ec2:DescribeInstances"
+                - "ec2:TerminateInstances"
+              Resource: "*"
+      Events:
+        Scheduler:
+          Type: Schedule
+          Properties:
+            Enabled: true
+            Schedule: !Ref RefreshPeriodSchedule
+      InlineCode: |
+        import json
+        import boto3
+        import os
+        from datetime import datetime
+
+        MAX_RUNNING_TIME_HOURS = int(os.environ['LONG_RUNNING_TIME_THREASHOLD_HOUR'])
+        ec2 = boto3.client('ec2')
+
+        def handler(event, context):
+
+            now = datetime.now()
+
+            # List the ec2 instances
+            instance_list_paginator = ec2.get_paginator('describe_instances')
+
+            # Evalute the instances
+            instance_ids_to_terminates = []
+            for page in instance_list_paginator.paginate():
+                for reservation in page.get('Reservations', []):
+                    for instance in reservation.get('Instances', []):
+
+                        launch_time = instance.get('LaunchTime')
+
+                        time_difference = now - launch_time
+                        time_difference_hours = int(time_difference.seconds / 60 / 60)
+                        print(f'Running time in hours for instance {instance.get("InstanceId")} is {time_difference_hours}')
+                        if (time_difference_hours >= MAX_RUNNING_TIME_HOURS):
+                            instance_ids_to_terminates.append(instance.get("InstanceId"))
+
+            # Terminate the instances
+            if instance_ids_to_terminates:
+                print(f'Terminating {len(instance_ids_to_terminates)} instances ({instance_ids_to_terminates})...')
+                ec2.terminate_instances(InstanceIds=instance_ids_to_terminates)
